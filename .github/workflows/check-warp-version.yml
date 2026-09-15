@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: check-warp-version
@@ -43,11 +44,15 @@ jobs:
               STATUS=$(curl -s -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}")
               ;;
             ghcr.io)
+              ACCEPT="application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json"
+              # try anonymously first (works for public packages)
               TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:${IMAGE}:pull" | jq -r '.token')
-              STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
-                -H "Authorization: Bearer ${TOKEN}" \
-                -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json" \
-                "https://ghcr.io/v2/${IMAGE}/manifests/${TAG}")
+              STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${TOKEN}" -H "Accept: ${ACCEPT}" "https://ghcr.io/v2/${IMAGE}/manifests/${TAG}")
+              if [ "${STATUS}" != "200" ] && [ "${STATUS}" != "404" ]; then
+                echo "Anonymous check returned HTTP ${STATUS}, the package may be private, retrying with GITHUB_TOKEN"
+                TOKEN=$(curl -s -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" "https://ghcr.io/token?scope=repository:${IMAGE}:pull" | jq -r '.token')
+                STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${TOKEN}" -H "Accept: ${ACCEPT}" "https://ghcr.io/v2/${IMAGE}/manifests/${TAG}")
+              fi
               ;;
             *)
               echo "::error::Unsupported registry '${REGISTRY}', only docker.io and ghcr.io are supported."
@@ -62,7 +67,7 @@ jobs:
             echo "Image not found, triggering build"
             echo "SHOULD_BUILD=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::Unexpected HTTP ${STATUS} when checking the image tag. If your images are private, the anonymous check cannot see them."
+            echo "::error::Unexpected HTTP ${STATUS} when checking the image tag."
             exit 1
           fi
 
