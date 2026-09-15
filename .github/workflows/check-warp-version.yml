@@ -1,0 +1,72 @@
+name: Check WARP client version
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # every day at 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-warp-version
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should-build: ${{ steps.check-image.outputs.SHOULD_BUILD }}
+    steps:
+      - name: Get WARP client version
+        id: get-warp-version
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update
+          echo "WARP_VERSION=$(apt-cache show cloudflare-warp | grep '^Version:' | awk '{print $2}' | sed 's/-[0-9]*$//')" >> "$GITHUB_OUTPUT"
+
+      - name: Get GOST version
+        id: get-gost-version
+        run: |
+          echo "GOST_VERSION=$(curl -H 'authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' -s https://api.github.com/repos/ginuerzh/gost/releases/latest | jq -r '.tag_name' | cut -c 2-)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if image tag already exists
+        id: check-image
+        run: |
+          TAG="${{ steps.get-warp-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}"
+          IMAGE="${{ vars.IMAGE_NAME }}"
+          REGISTRY="${{ vars.REGISTRY }}"
+          echo "Checking ${REGISTRY:-docker.io}/${IMAGE}:${TAG}"
+          case "${REGISTRY}" in
+            ""|docker.io)
+              STATUS=$(curl -s -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}")
+              ;;
+            ghcr.io)
+              TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:${IMAGE}:pull" | jq -r '.token')
+              STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+                -H "Authorization: Bearer ${TOKEN}" \
+                -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json" \
+                "https://ghcr.io/v2/${IMAGE}/manifests/${TAG}")
+              ;;
+            *)
+              echo "::error::Unsupported registry '${REGISTRY}', only docker.io and ghcr.io are supported."
+              exit 1
+              ;;
+          esac
+          echo "Registry returned HTTP ${STATUS}"
+          if [ "${STATUS}" = "200" ]; then
+            echo "Image already exists, skipping build"
+            echo "SHOULD_BUILD=false" >> "$GITHUB_OUTPUT"
+          elif [ "${STATUS}" = "404" ]; then
+            echo "Image not found, triggering build"
+            echo "SHOULD_BUILD=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unexpected HTTP ${STATUS} when checking the image tag. If your images are private, the anonymous check cannot see them."
+            exit 1
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.should-build == 'true'
+    uses: ./.github/workflows/build-publish.yml

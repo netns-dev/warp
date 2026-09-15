@@ -7,6 +7,12 @@ on:
         description: "Version of gost. If empty, the latest version will be used."
         required: false
         type: string
+  workflow_call:
+    inputs:
+      GOST_VERSION:
+        description: "Version of gost. If empty, the latest version will be used."
+        required: false
+        type: string
 
 jobs:
   build:
@@ -33,10 +39,10 @@ jobs:
       - name: Get gost version
         id: get-gost-version
         run: |
-          if [ -z "${{ github.event.inputs.GOST_VERSION }}" ]; then
+          if [ -z "${{ inputs.GOST_VERSION }}" ]; then
             echo "GOST_VERSION=$(curl -H 'authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' -s https://api.github.com/repos/ginuerzh/gost/releases/latest | jq -r '.tag_name' | cut -c 2-)" >> "$GITHUB_OUTPUT"
           else
-            echo "GOST_VERSION=${{ github.event.inputs.GOST_VERSION }}" >> "$GITHUB_OUTPUT"
+            echo "GOST_VERSION=${{ inputs.GOST_VERSION }}" >> "$GITHUB_OUTPUT"
           fi
 
       # gost version must be <number>.<number>.<number>
